@@ -15,6 +15,7 @@ FLOOR_C = (140, 142, 158)
 WALL_DIM = (40, 42, 54)
 FLOOR_DIM = (72, 74, 88)
 CHEST_C = (214, 170, 62)
+SMOKE_C = (200, 200, 210)
 ENTRY_C = (90, 130, 120)
 TEXT = (226, 226, 234)
 DIM_TEXT = (150, 150, 165)
@@ -79,6 +80,13 @@ class Renderer:
                     overlay.fill(FOG)
                     self.screen.blit(overlay, rect.topleft)
 
+        for p in s.smoke_tiles:
+            if p in s.known:
+                cloud = pygame.Surface((TILE - 1, TILE - 1))
+                cloud.set_alpha(130)
+                cloud.fill(SMOKE_C)
+                self.screen.blit(cloud, (p[0] * TILE, p[1] * TILE))
+
         for m in s.living_monsters:
             if m.pos in s.visible:
                 self._entity(m.pos, MONSTER_C, "M", m.hp / m.max_hp)
@@ -118,7 +126,13 @@ class Renderer:
         self.screen.blit(self.font.render(
             f"Chests {chests}/{s.total_chests}   "
             f"Enemies {len(s.living_monsters)}", True, DIM_TEXT), (x0, y))
-        y += 24
+        y += 18
+        smoke_txt = ("Smoke: " + ", ".join(
+            f"{c.center} {c.turns_left}t" for c in s.smokes)
+            if s.smokes else "Smoke: none")
+        self.screen.blit(self.font.render(smoke_txt[:44], True, SMOKE_C),
+                         (x0, y))
+        y += 22
 
         for h in s.heroes:
             color = ROLE_COLORS.get(h.role, TEXT) if h.alive else (90, 70, 70)

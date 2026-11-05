@@ -76,6 +76,8 @@ def take_turn(state: GameState, use_llm: bool,
     state.turn += 1
     state.damaged_this_turn.clear()
     state.tick_hero_timers()
+    state.tick_smoke()
+    state.update_vision()       # a cloud that just cleared no longer blinds
 
     if should_replan(state):
         goals, source = plan(state, use_llm)
@@ -136,6 +138,12 @@ def metrics(state: GameState) -> dict:
         "llm_actions": state.stats["llm_actions"],
         "fallback_actions": state.stats["fallback_actions"],
         "invalid_actions": state.stats["invalid_actions"],
+        "smoke": state.smoke_enabled,
+        "smokes_used": state.stats["smokes_used"],
+        "smokes_on_ally": state.stats["smokes_on_ally"],
+        "ignites": state.stats["ignites"],
+        "ignite_damage": state.stats["ignite_damage"],
+        "ignite_kills": state.stats["ignite_kills"],
         "invalid_rate": (state.stats["invalid_actions"] / total_actions
                          if total_actions else 0.0),
     }

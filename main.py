@@ -27,6 +27,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fps", type=int, default=6)
     p.add_argument("--no-keeper", action="store_true",
                    help="disable the enemy commander (ablation condition)")
+    p.add_argument("--no-smoke", action="store_true",
+                   help="take the Scout's smoke away (ablation condition)")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args()
 
@@ -43,7 +45,7 @@ def main() -> None:
 
     gmap = GameMap.from_file(args.map)
     state = build_state(gmap, seed=args.seed, n_monsters=args.monsters,
-                        max_turns=args.max_turns)
+                        max_turns=args.max_turns, smoke=not args.no_smoke)
 
     if args.headless:
         result = run_headless(state, use_llm, verbose=args.verbose,
@@ -86,6 +88,10 @@ def print_result(m: dict) -> None:
     print(f"  fallback acts   {m['fallback_actions']}")
     print(f"  invalid         {m['invalid_actions']} "
           f"({m['invalid_rate']:.1%})")
+    print(f"  smoke used      {m['smokes_used']} "
+          f"(on an ally {m['smokes_on_ally']})")
+    print(f"  ignites         {m['ignites']} "
+          f"({m['ignite_damage']} damage, {m['ignite_kills']} kills)")
 
 
 if __name__ == "__main__":

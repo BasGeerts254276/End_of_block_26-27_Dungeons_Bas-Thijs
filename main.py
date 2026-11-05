@@ -24,9 +24,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--monsters", type=int, default=5)
     p.add_argument("--max-turns", type=int, default=120)
     p.add_argument("--headless", action="store_true")
-    p.add_argument("--fps", type=int, default=6)
+    p.add_argument("--fps", type=float, default=6,
+                   help="turns per second; 0.5 = one turn every two seconds")
+    p.add_argument("--paused", action="store_true",
+                   help="start paused: space = play/pause, n = next turn")
     p.add_argument("--no-keeper", action="store_true",
                    help="disable the enemy commander (ablation condition)")
+    p.add_argument("--no-smoke", action="store_true",
+                   help="take the Scout's smoke away (ablation condition)")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args()
 
@@ -43,7 +48,7 @@ def main() -> None:
 
     gmap = GameMap.from_file(args.map)
     state = build_state(gmap, seed=args.seed, n_monsters=args.monsters,
-                        max_turns=args.max_turns)
+                        max_turns=args.max_turns, smoke=not args.no_smoke)
 
     if args.headless:
         result = run_headless(state, use_llm, verbose=args.verbose,
@@ -53,13 +58,13 @@ def main() -> None:
 
     from render import Renderer
 
-    renderer = Renderer(state, fps=args.fps)
+    renderer = Renderer(state, fps=args.fps, paused=args.paused)
     running = True
     while running:
         running = renderer.pump()
         if not running:
             break
-        if not state.over:
+        if not state.over and renderer.should_advance():
             take_turn(state, use_llm,
                       enemy_commander=not args.no_keeper)
         renderer.draw()
@@ -86,6 +91,10 @@ def print_result(m: dict) -> None:
     print(f"  fallback acts   {m['fallback_actions']}")
     print(f"  invalid         {m['invalid_actions']} "
           f"({m['invalid_rate']:.1%})")
+    print(f"  smoke used      {m['smokes_used']} "
+          f"(on an ally {m['smokes_on_ally']})")
+    print(f"  ignites         {m['ignites']} "
+          f"({m['ignite_damage']} damage, {m['ignite_kills']} kills)")
 
 
 if __name__ == "__main__":

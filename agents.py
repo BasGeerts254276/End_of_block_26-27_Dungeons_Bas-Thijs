@@ -15,7 +15,11 @@ from typing import Callable
 
 from engine import (
     HEAL_RANGE,
+    IGNITE_RANGE,
     MOVE_SPEED,
+    SMOKE_DURATION,
+    SMOKE_RANGE,
+    SMOKE_SLIP,
     TAUNT_RANGE,
     Entity,
     GameState,
@@ -138,6 +142,40 @@ T_LOOT = {
     },
 }
 
+T_SMOKE = {
+    "name": "smoke",
+    "description": (
+        "Throw a 5x5 smoke cloud that stays full size for {d} turns and then "
+        "quickly collapses. Enemies cannot see into it or through it, so "
+        "they cannot target anyone inside, and anyone starting their move "
+        "inside it moves one extra tile. Leave target empty to cover "
+        "yourself (you also slip up to {s} tiles away from the nearest "
+        "enemy), or name an ally within {r} tiles to cover them. Very "
+        "limited: usually one per game."
+    ).format(d=SMOKE_DURATION, s=SMOKE_SLIP, r=SMOKE_RANGE),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "target": {"type": "string",
+                       "description": "ally to cover; empty = yourself"},
+            "reason": {"type": "string"},
+        },
+    },
+}
+
+T_IGNITE = {
+    "name": "ignite",
+    "description": (
+        f"Set a smoke cloud within {IGNITE_RANGE} tiles on fire. Every enemy "
+        "inside takes damage, but the cloud burns away, so any ally hiding "
+        "in it is exposed again."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"reason": {"type": "string"}},
+    },
+}
+
 T_WAIT = {
     "name": "wait",
     "description": "Do nothing this turn.",
@@ -168,6 +206,51 @@ def _explore_or_wait(state: GameState, hero: Entity) -> Action:
     return "wait", {}
 
 
+def _ignite_if_worth_it(state: GameState, hero: Entity) -> Action | None:
+    """DPS combo with the Scout's smoke.
+
+    Burning the smoke hurts every monster inside, but it also takes the
+    cover away from whoever is hiding there. So: burn when it catches two
+    or more, or when the cloud is about to clear anyway, or when no ally is
+    hiding inside.
+    """
+    for cloud in state.smokes:
+        if cloud.center not in state.visible:
+            continue
+        if manhattan(hero.pos, cloud.center) > IGNITE_RANGE:
+            continue
+        caught = [m for m in state.visible_monsters() if m.pos in cloud.tiles]
+        if not caught:
+            continue
+        allies_inside = [h for h in state.living_heroes if h.pos in cloud.tiles]
+        if len(caught) >= 2 or cloud.fading or not allies_inside:
+            return "ignite", {}
+    return None
+
+
+def _smoke_if_needed(state: GameState, hero: Entity) -> Action | None:
+    """Scout: save yourself first, then save a squishy ally."""
+    if hero.charges.get("smoke", 0) <= 0:
+        return None
+    smoke = state.smoke_tiles
+    vis = state.visible_monsters()
+
+    near_me = [m for m in vis if chebyshev(hero.pos, m.pos) <= 2]
+    if near_me and hero.hp_pct < 0.6 and hero.pos not in smoke:
+        return "smoke", {}
+
+    for ally in state.living_heroes:
+        if ally is hero or ally.role == "Tank" or ally.pos in smoke:
+            continue
+        if ally.hp_pct >= 0.4:
+            continue
+        if manhattan(hero.pos, ally.pos) > SMOKE_RANGE:
+            continue
+        if any(chebyshev(ally.pos, m.pos) <= 1 for m in vis):
+            return "smoke", {"target": ally.name}
+    return None
+
+
 def tank_policy(state: GameState, hero: Entity) -> Action:
     if hero.pos in state.chests:
         return "loot", {}
@@ -194,6 +277,9 @@ def dps_policy(state: GameState, hero: Entity) -> Action:
                         None)
             if tank:
                 return "move_to", {"x": tank.pos[0], "y": tank.pos[1]}
+        ignite = _ignite_if_worth_it(state, hero)
+        if ignite:
+            return ignite
         weakest = min(state.visible_monsters(), key=lambda m: m.hp)
         return "focus_fire", {"target": weakest.name}
     return _explore_or_wait(state, hero)
@@ -221,6 +307,9 @@ def healer_policy(state: GameState, hero: Entity) -> Action:
 def scout_policy(state: GameState, hero: Entity) -> Action:
     if hero.pos in state.chests:
         return "loot", {}
+    smoke = _smoke_if_needed(state, hero)
+    if smoke:
+        return smoke
     chests = state.known_chests()
     if chests:
         c = min(chests, key=lambda p: manhattan(hero.pos, p))
@@ -280,9 +369,12 @@ PERSONAS: dict[str, Persona] = {
             "Strike the target with the lowest HP so enemies actually die "
             "instead of all limping around half-wounded. Use focus_fire when "
             "an ally has already hit that target this turn. Stay out of the "
-            "open: below a quarter HP, fall back towards the Tank."
+            "open: below a quarter HP, fall back towards the Tank. When "
+            "enemies are standing in Pip's smoke, ignite it: two or more "
+            "caught at once is a great trade, but burning it exposes any "
+            "ally hiding inside."
         ),
-        tools=[T_MOVE, T_ATTACK, T_FOCUS, T_LOOT, T_WAIT],
+        tools=[T_MOVE, T_ATTACK, T_FOCUS, T_IGNITE, T_LOOT, T_WAIT],
         fallback=dps_policy,
     ),
     "Healer": Persona(
@@ -304,9 +396,12 @@ PERSONAS: dict[str, Persona] = {
             "and looting chests. Explore unknown ground, use scout to reveal "
             "large parts of the map, and head for chests as soon as you know "
             "where they are. Avoid fights, but hit back when something is "
-            "standing next to you."
+            "standing next to you. You carry one smoke bomb: use it on "
+            "yourself when an enemy closes in and you are hurt, or throw it "
+            "over a badly wounded ally who is in melee. Vex can ignite the "
+            "smoke to burn enemies caught in it."
         ),
-        tools=[T_MOVE, T_SCOUT, T_LOOT, T_ATTACK, T_WAIT],
+        tools=[T_MOVE, T_SCOUT, T_SMOKE, T_LOOT, T_ATTACK, T_WAIT],
         fallback=scout_policy,
     ),
 }

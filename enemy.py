@@ -311,17 +311,24 @@ def disband(state: GameState) -> None:
     """Commander off: every monster acts alone, with no shared order.
 
     This is the ablation condition. No coordination and no shared
-    last-seen intelligence: each monster only knows what it sees itself.
+    intelligence: each monster only knows what it sees itself. Both the
+    faction's shared sight (mon_visible) and its shared memory
+    (hero_last_seen) are swapped for this one monster's own view while it
+    acts, and restored afterwards.
     """
     for mon in list(state.living_monsters):
         if not state.living_heroes:
             break
         mon.order = "swarm"
+        own_sight = state.monster_fov(mon)      # respects walls and smoke
         own_view = {h.name: h.pos for h in state.living_heroes
-                    if manhattan(h.pos, mon.pos) <= 5}
-        shared = state.hero_last_seen
+                    if h.pos in own_sight}
+        shared_memory = state.hero_last_seen
+        shared_sight = state.mon_visible
         state.hero_last_seen = own_view
+        state.mon_visible = own_sight
         try:
             execute(state, mon)
         finally:
-            state.hero_last_seen = shared
+            state.hero_last_seen = shared_memory
+            state.mon_visible = shared_sight

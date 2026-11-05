@@ -99,7 +99,7 @@ between conditions cannot come from the dungeon layout or from where the
 monsters spawned.
 
 ```bash
-python eval.py                                   # 600 games, ~5 min
+python eval.py --runs 100                           # 600 games, ~5 min
 python eval.py --runs 20 --out small.csv         # quick 120-game check
 python eval.py --conditions keeper_on --out on.csv   # one condition
 python eval.py --from-csv on.csv off.csv --plot results.png   # merge chunks

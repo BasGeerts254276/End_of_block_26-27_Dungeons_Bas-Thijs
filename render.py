@@ -15,7 +15,8 @@ FLOOR_C = (140, 142, 158)
 WALL_DIM = (40, 42, 54)
 FLOOR_DIM = (72, 74, 88)
 CHEST_C = (214, 170, 62)
-SMOKE_C = (200, 200, 210)
+SMOKE_C = (150, 255, 40)         # toxic neon green, stands out against grey
+SMOKE_EDGE = (215, 255, 150)
 ENTRY_C = (90, 130, 120)
 TEXT = (226, 226, 234)
 DIM_TEXT = (150, 150, 165)
@@ -30,7 +31,8 @@ MONSTER_C = (188, 84, 130)
 
 
 class Renderer:
-    def __init__(self, state: GameState, fps: int = 8):
+    def __init__(self, state: GameState, fps: float = 8,
+                 paused: bool = False):
         pygame.display.init()   # no mixer: avoids ALSA noise
         pygame.font.init()
         self.state = state
@@ -42,16 +44,35 @@ class Renderer:
         self.font = pygame.font.SysFont("monospace", 13)
         self.big = pygame.font.SysFont("monospace", 20, bold=True)
         self.clock = pygame.time.Clock()
+        self.paused = paused
+        self._step = False
 
     def pump(self) -> bool:
-        """False when the user wants to quit."""
+        """False when the user wants to quit.
+
+        Space pauses and resumes. N (or the right arrow) plays exactly one
+        turn while paused.
+        """
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
-            if event.type == pygame.KEYDOWN and event.key in (
-                    pygame.K_ESCAPE, pygame.K_q):
-                return False
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                    return False
+                if event.key == pygame.K_SPACE:
+                    self.paused = not self.paused
+                if event.key in (pygame.K_n, pygame.K_RIGHT):
+                    self._step = True
         return True
+
+    def should_advance(self) -> bool:
+        """True when the sim may play the next turn."""
+        if not self.paused:
+            return True
+        if self._step:
+            self._step = False
+            return True
+        return False
 
     def draw(self) -> None:
         s = self.state
@@ -80,12 +101,20 @@ class Renderer:
                     overlay.fill(FOG)
                     self.screen.blit(overlay, rect.topleft)
 
-        for p in s.smoke_tiles:
-            if p in s.known:
+        for c in s.smokes:
+            # Thick while at full size, see-through while it collapses.
+            alpha = 120 if c.fading else 210
+            for p in c.tiles:
+                if p not in s.known:
+                    continue
+                rect = pygame.Rect(p[0] * TILE, p[1] * TILE, TILE - 1, TILE - 1)
                 cloud = pygame.Surface((TILE - 1, TILE - 1))
-                cloud.set_alpha(130)
+                cloud.set_alpha(alpha)
                 cloud.fill(SMOKE_C)
-                self.screen.blit(cloud, (p[0] * TILE, p[1] * TILE))
+                self.screen.blit(cloud, rect.topleft)
+                pygame.draw.rect(self.screen, SMOKE_EDGE, rect, 1)
+                puff = self.font.render("~", True, SMOKE_EDGE)
+                self.screen.blit(puff, puff.get_rect(center=rect.center))
 
         for m in s.living_monsters:
             if m.pos in s.visible:
@@ -96,7 +125,8 @@ class Renderer:
 
         self._sidebar()
         pygame.display.flip()
-        self.clock.tick(self.fps)
+        # While paused, keep the window responsive to key presses.
+        self.clock.tick(30 if self.paused else self.fps)
 
     def _entity(self, pos, color, letter, hp_frac) -> None:
         x, y = pos
@@ -118,9 +148,13 @@ class Renderer:
             pygame.Rect(x0 - 12, 0, SIDEBAR, self.screen.get_height()))
 
         title = self.big.render(
-            f"Turn {s.turn}/{s.max_turns}", True, TEXT)
+            f"Turn {s.turn}/{s.max_turns}"
+            f"{'   PAUSED' if self.paused else ''}", True, TEXT)
         self.screen.blit(title, (x0, y))
-        y += 30
+        y += 26
+        self.screen.blit(self.font.render(
+            "space = pause/play   n = next turn", True, DIM_TEXT), (x0, y))
+        y += 22
 
         chests = s.total_chests - len(s.chests)
         self.screen.blit(self.font.render(
@@ -128,7 +162,8 @@ class Renderer:
             f"Enemies {len(s.living_monsters)}", True, DIM_TEXT), (x0, y))
         y += 18
         smoke_txt = ("Smoke: " + ", ".join(
-            f"{c.center} {c.turns_left}t" for c in s.smokes)
+            f"{c.center} {c.turns_left}t{' thin' if c.fading else ''}"
+            for c in s.smokes)
             if s.smokes else "Smoke: none")
         self.screen.blit(self.font.render(smoke_txt[:44], True, SMOKE_C),
                          (x0, y))

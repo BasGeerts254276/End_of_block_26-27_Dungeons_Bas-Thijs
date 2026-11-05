@@ -19,6 +19,7 @@ from engine import (
     MOVE_SPEED,
     SMOKE_DURATION,
     SMOKE_RANGE,
+    SMOKE_SLIP,
     TAUNT_RANGE,
     Entity,
     GameState,
@@ -144,12 +145,14 @@ T_LOOT = {
 T_SMOKE = {
     "name": "smoke",
     "description": (
-        "Throw a 3x3 smoke cloud that lasts {d} turns. Enemies cannot see "
-        "into it or through it, so they cannot target anyone inside. Leave "
-        "target empty to cover yourself (you also slip one step away from the "
-        "nearest enemy), or name an ally within {r} tiles to cover them. "
-        "Very limited: usually one per game."
-    ).format(d=SMOKE_DURATION, r=SMOKE_RANGE),
+        "Throw a 5x5 smoke cloud that stays full size for {d} turns and then "
+        "quickly collapses. Enemies cannot see into it or through it, so "
+        "they cannot target anyone inside, and anyone starting their move "
+        "inside it moves one extra tile. Leave target empty to cover "
+        "yourself (you also slip up to {s} tiles away from the nearest "
+        "enemy), or name an ally within {r} tiles to cover them. Very "
+        "limited: usually one per game."
+    ).format(d=SMOKE_DURATION, s=SMOKE_SLIP, r=SMOKE_RANGE),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -220,7 +223,7 @@ def _ignite_if_worth_it(state: GameState, hero: Entity) -> Action | None:
         if not caught:
             continue
         allies_inside = [h for h in state.living_heroes if h.pos in cloud.tiles]
-        if len(caught) >= 2 or cloud.turns_left <= 1 or not allies_inside:
+        if len(caught) >= 2 or cloud.fading or not allies_inside:
             return "ignite", {}
     return None
 

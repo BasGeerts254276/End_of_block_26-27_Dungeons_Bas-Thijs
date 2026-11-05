@@ -36,8 +36,11 @@ SCOUT_COOLDOWN = 3
 
 # Smoke (Scout) and ignite (DPS). See _do_smoke and _do_ignite below.
 SMOKE_CHARGES = 1       # uses per game
-SMOKE_RADIUS = 1        # 1 = a 3x3 cloud
-SMOKE_DURATION = 3      # blocks three monster turns
+SMOKE_RADIUS = 2        # 2 = a 5x5 cloud at full size
+SMOKE_DURATION = 3      # turns at full size
+SMOKE_FADE = 1          # then it shrinks fast: one turn at 3x3, then gone
+SMOKE_SLIP = 2          # tiles the Scout slips away when smoking himself
+SMOKE_SPEED_BONUS = 1   # "ninja" bonus: +1 move for heroes starting in smoke
 SMOKE_RANGE = 4         # how far away an ally can be to get covered
 IGNITE_RANGE = 5        # how far the DPS can be from the cloud's centre
 IGNITE_DAMAGE = (6, 10) # to every monster inside the cloud
@@ -81,6 +84,11 @@ class Smoke:
     turns_left: int
     owner: str          # who threw it
     covering: str       # who it was thrown on
+    radius: int = SMOKE_RADIUS
+
+    @property
+    def fading(self) -> bool:
+        return self.turns_left <= SMOKE_FADE
 
 
 @dataclass
@@ -159,6 +167,20 @@ class GameState:
 
     def hero(self, name: str) -> Entity | None:
         return next((h for h in self.heroes if h.name == name and h.alive), None)
+
+    def _cloud_tiles(self, center: Pos, radius: int) -> frozenset[Pos]:
+        cx, cy = center
+        return frozenset(
+            (x, y)
+            for y in range(cy - radius, cy + radius + 1)
+            for x in range(cx - radius, cx + radius + 1)
+            if self.gmap.walkable((x, y)))
+
+    def move_speed(self, hero: Entity) -> int:
+        """Heroes who start their move inside smoke get the ninja bonus."""
+        if hero.pos in self.smoke_tiles:
+            return MOVE_SPEED + SMOKE_SPEED_BONUS
+        return MOVE_SPEED
 
     @property
     def smoke_tiles(self) -> frozenset[Pos]:
@@ -253,7 +275,8 @@ class GameState:
         if self.smokes:
             lines.append("Smoke clouds (enemies cannot see into them): " +
                          "; ".join(
-                f"centre {c.center}, {c.turns_left} turns left, enemies "
+                f"centre {c.center}, {c.turns_left} turns left"
+                f"{' (thinning)' if c.fading else ''}, enemies "
                 f"inside: {[m.name for m in self.visible_monsters() if m.pos in c.tiles] or 'none'}"
                 for c in self.smokes))
 
@@ -356,7 +379,7 @@ class GameState:
             return ActionResult(False, f"you have never seen {target}")
         if not self.gmap.walkable(target):
             return ActionResult(False, f"{target} is a wall")
-        moved = self._step_towards(hero, target, MOVE_SPEED)
+        moved = self._step_towards(hero, target, self.move_speed(hero))
         if moved == 0:
             return ActionResult(False, f"no path to {target}")
         return ActionResult(True, f"{hero.name} moves {moved} tiles to {hero.pos}")
@@ -389,7 +412,7 @@ class GameState:
         if chebyshev(hero.pos, mon.pos) > 1:
             # Forgiving: step closer first, then strike. This cuts a huge
             # number of invalid actions without letting the agent cheat.
-            self._step_towards(hero, mon.pos, MOVE_SPEED)
+            self._step_towards(hero, mon.pos, self.move_speed(hero))
             if chebyshev(hero.pos, mon.pos) > 1:
                 return ActionResult(
                     True, f"{hero.name} closes on {name} but is not in range yet")
@@ -484,15 +507,10 @@ class GameState:
                     False, f"{ally.name} is too far away for smoke "
                            f"(range {SMOKE_RANGE})")
 
-        cx, cy = ally.pos
-        tiles = frozenset(
-            (x, y)
-            for y in range(cy - SMOKE_RADIUS, cy + SMOKE_RADIUS + 1)
-            for x in range(cx - SMOKE_RADIUS, cx + SMOKE_RADIUS + 1)
-            if self.gmap.walkable((x, y)))
+        tiles = self._cloud_tiles(ally.pos, SMOKE_RADIUS)
         self.smokes.append(Smoke(center=ally.pos, tiles=tiles,
-                                 turns_left=SMOKE_DURATION, owner=hero.name,
-                                 covering=ally.name))
+                                 turns_left=SMOKE_DURATION + SMOKE_FADE,
+                                 owner=hero.name, covering=ally.name))
         hero.charges["smoke"] -= 1
         self.stats["smokes_used"] += 1
 
@@ -501,19 +519,25 @@ class GameState:
             return ActionResult(
                 True, f"{hero.name} throws smoke over {ally.name}")
 
-        # Smoke on yourself: slip one step away from the nearest enemy you
-        # can see, but stay inside the cloud so you stay hidden.
+        # Smoke on yourself: slip up to SMOKE_SLIP tiles away from the
+        # nearest enemy you can see, but stay inside the cloud so you stay
+        # hidden. Ninja style.
         threats = self.visible_monsters()
         moved = ""
         if threats:
             threat = min(threats, key=lambda m: manhattan(hero.pos, m.pos))
-            options = [p for p in neighbors4(hero.pos)
-                       if p in tiles and p not in self.occupied]
-            if options:
+            for _ in range(SMOKE_SLIP):
+                options = [p for p in neighbors4(hero.pos)
+                           if p in tiles and p not in self.occupied]
+                if not options:
+                    break
                 best = max(options, key=lambda p: manhattan(p, threat.pos))
-                if manhattan(best, threat.pos) > manhattan(hero.pos, threat.pos):
-                    hero.pos = best
-                    moved = f" and slips to {best}"
+                if manhattan(best, threat.pos) <= manhattan(hero.pos,
+                                                            threat.pos):
+                    break
+                hero.pos = best
+            if hero.pos != ally.pos:
+                moved = f" and slips to {hero.pos}"
         return ActionResult(True, f"{hero.name} vanishes in smoke{moved}")
 
     def _do_ignite(self, hero: Entity, args: dict) -> ActionResult:
@@ -558,10 +582,19 @@ class GameState:
     # --- turn bookkeeping -----------------------------------------------------------
 
     def tick_smoke(self) -> None:
-        """Called at the start of every turn. A cloud thrown in turn T
-        blocks the monster turns of T, T+1 and T+2, then it is gone."""
+        """Called at the start of every turn.
+
+        A cloud thrown in turn T stays at full size (5x5) for the monster
+        turns of T, T+1 and T+2. Then it collapses fast: in T+3 it is only
+        3x3, and at the start of T+4 it is gone.
+        """
         for cloud in self.smokes:
             cloud.turns_left -= 1
+            if cloud.fading and cloud.radius > 1:
+                cloud.radius = max(1, SMOKE_RADIUS - (SMOKE_FADE
+                                                     - cloud.turns_left + 1))
+                cloud.tiles = self._cloud_tiles(cloud.center, cloud.radius)
+                self.say(f"the smoke at {cloud.center} thins out")
         gone = [c for c in self.smokes if c.turns_left <= 0]
         for c in gone:
             self.say(f"the smoke at {c.center} clears")

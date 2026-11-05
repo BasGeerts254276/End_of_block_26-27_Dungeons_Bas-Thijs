@@ -43,6 +43,27 @@ submission had to be in English.
 **5. Benchmark harness.** We asked for the 100+ game benchmark with the
 commander ablation, CSV output, and a plot.
 
+**6. Smoke and ignite (v2).** Watching games, we noticed the Scout dying
+a lot (44% of games with the Keeper on). We came up with two options
+ourselves and asked Claude for pros and cons of each: a one-shot trap with
+a "cry" that alerts the Keeper, or a one-use smoke bomb. We picked smoke,
+and set the design: three turns instead of one, smoke-and-step-away in one
+action, the option to throw it over a teammate, and a DPS ability to
+ignite the smoke for damage to every monster inside. Claude implemented it
+and extended `eval.py` to four conditions (Keeper on/off x smoke on/off).
+
+**7. Making it watchable, and the ninja version.** In the window the smoke
+was nearly invisible, so we asked for a stronger colour and a slower way
+to watch. We got pause and single-step keys and fractional `--fps`, and
+chose a toxic neon green ourselves. After watching it again we asked for a
+bigger cloud that collapses fast after three turns and lets the squad get
+away quickly. That became the 5x5 cloud, the one-turn collapse to 3x3,
+the two-tile slip for the Scout and +1 move for anyone starting in smoke.
+
+**8. Reading the v2 benchmark.** We ran 1200 games and asked for help
+reading the report and writing it up. The write-up in the README is based
+on that report plus a per-map breakdown and the Keeper's order mix.
+
 ## What we kept
 
 - The layered structure: `world.py` (pure geometry) -> `engine.py` (state and
@@ -57,6 +78,13 @@ commander ablation, CSV output, and a plot.
 - Role differences encoded in the tool schemas rather than only in the
   prompts, so a Healer attempting to taunt is a measurable event.
 - Commanders running every three turns instead of every turn.
+- Smoke as an extra sight blocker inside the existing field-of-view code,
+  rather than a special case in the monster AI. The enemy's knowledge model
+  did not have to change; only what it can see did.
+- The squad seeing through its own smoke. Without that the DPS could not
+  tell who is caught in the cloud, and ignite would be guesswork.
+- `--no-smoke` as a switch, so smoke is its own ablation on the same seeds
+  instead of a before/after comparison of two different code versions.
 
 ## What we threw away, and why
 
@@ -100,6 +128,36 @@ p = 0.024 on the same data. The error bars in `results.png` still overlap
 slightly, so this is noted explicitly in the README. We kept the plot rather
 than hiding the awkward visual.
 
+**The trap idea.** Claude's analysis convinced us it had too many moving
+parts (trap object, trigger, cry, Keeper reaction, speed boost, squad
+convergence) for one week, it would not directly protect the Scout, and
+one trap per game would rarely trigger and be hard to measure. Dropped in
+favour of smoke.
+
+**One-turn smoke.** Our first idea. Heroes act before monsters, so a
+one-turn cloud only blinds a single monster turn, and fast Stalkers would
+see the Scout again immediately. Made it three turns.
+
+**The grey and then light-blue cloud.** The first rendering was light grey
+on a grey floor and almost invisible; light blue was better but did not
+feel right. Toxic green it is.
+
+**The v1 commander conclusion.** The v1 README said the Keeper costs the
+squad nine points of win rate (p = 0.024). While adding smoke, Claude
+found that `disband()`, the Keeper-off condition, let each monster detect
+heroes within five tiles by distance alone, through walls, and still use
+the faction's shared sight for targeting. That is cheating in exactly the
+condition that is supposed to show monsters acting alone, and our AST
+anti-cheat test did not catch it, because it only checks for
+`state.known` and `state.visible`. With the leak fixed, the Keeper effect
+without smoke shrinks to 1.3 points (p = 0.74). We threw the old
+conclusion away, but kept the v1 numbers in the README, clearly labelled,
+because how the conclusion changed is part of the result.
+
+**Pressing n to stop a running game.** Claude offered to make `n` also
+pause the game while it is running. We kept it simple: space pauses, `n`
+steps while paused.
+
 **An uninformative plot panel.** The middle panel originally showed heroes
 lost per game, which is 1.41 versus 1.40 across conditions and says nothing.
 Replaced with the outcome breakdown (win / wiped / out of turns), which is
@@ -128,10 +186,28 @@ We did not take working-looking code on trust. Specifically:
 - `python tools/make_maps.py --check` validates map connectivity.
 - The benchmark was run twice at different sample sizes (240 games, then
   600) to confirm the ablation result was not an artefact of n.
+- After adding smoke, all 18 existing tests still passed, and we watched
+  several games step by step with `--paused` to see the cloud appear,
+  collapse and disappear.
+- Regression check in the v2 benchmark: "Keeper on, no smoke" reproduces
+  the v1 "Keeper on" numbers exactly (57.0%, 51.6 turns, 1.41 heroes lost),
+  because that code path was not changed and the seeds are fixed. Every v2
+  difference therefore comes from the smoke or from the vision fix.
 
-## Known limitation
+## Known limitations
 
 The benchmark numbers in the README are from scripted mode on both sides.
-LLM mode works and is tested, but 600 games at roughly 200 API calls each
-was not affordable. Any LLM-mode figures we report come from a small sample
-and are labelled as such.
+LLM mode works and is tested with a mocked model, but we had no API key
+available, so this repo contains no LLM-mode results at all. Even with a
+key, 1200 games at roughly 200 API calls each would not have been
+affordable.
+
+The v2 smoke results are also scripted on both sides. Two of the new
+mechanics are rare in practice: smoke on an ally happens in 1-3% of games
+and ignite in 8%, because the scripted Scout usually spends his single
+charge on himself first. Those numbers are reported as they are, not tuned
+until they looked good.
+
+The squad planner only reaches the personas through the LLM prompt. In
+scripted mode the fallback policies ignore its goals, so all scripted
+benchmark numbers are effectively "squad planner off". The README says so.

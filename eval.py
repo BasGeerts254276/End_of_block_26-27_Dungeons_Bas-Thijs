@@ -4,6 +4,7 @@
     python eval.py --runs 40 --out results.csv --plot results.png
     python eval.py --conditions keeper_on            # single condition
     python eval.py --mode llm --runs 3               # small LLM sample
+    python eval.py --conditions keeper_on keeper_on_nosmoke   # smoke ablation
 
 Every condition runs the SAME seeds on the SAME maps, so a difference
 between conditions cannot come from the dungeon layout or from where the
@@ -32,10 +33,21 @@ from world import GameMap
 DEFAULT_MAPS = ["maps/warren.txt", "maps/halls.txt", "maps/crypt.txt"]
 
 CONDITIONS = {
-    # name          : (enemy commander on?, note for the report)
-    "keeper_on": (True, "Dungeon Keeper issues orders to the monsters"),
-    "keeper_off": (False, "every monster acts alone, no shared intel"),
+    # name                : (Keeper on?, Scout smoke on?, note)
+    "keeper_on": (True, True, "Keeper issues orders, Scout has smoke"),
+    "keeper_off": (False, True, "monsters act alone, Scout has smoke"),
+    "keeper_on_nosmoke": (True, False, "Keeper on, no smoke"),
+    "keeper_off_nosmoke": (False, False, "monsters alone, no smoke"),
 }
+
+# Which pairs to test against each other, if both were run.
+COMPARISONS = [
+    ("keeper_on", "keeper_off", "effect of the enemy commander"),
+    ("keeper_on_nosmoke", "keeper_off_nosmoke",
+     "effect of the enemy commander, without smoke"),
+    ("keeper_on", "keeper_on_nosmoke", "effect of smoke, Keeper on"),
+    ("keeper_off", "keeper_off_nosmoke", "effect of smoke, Keeper off"),
+]
 
 FIELDS = [
     "condition", "mode", "map", "seed", "outcome", "won", "turns",
@@ -43,6 +55,8 @@ FIELDS = [
     "total_chests", "survivors", "hp_left", "monsters_killed",
     "orders_issued", "order_mix", "llm_calls", "llm_actions",
     "fallback_actions", "invalid_actions",
+    "smoke", "smokes_used", "smokes_on_ally", "ignites", "ignite_damage",
+    "ignite_kills",
 ]
 
 
@@ -84,10 +98,10 @@ def wilson(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
 
 def run_one(map_path: str, condition: str, mode: str, seed: int,
             monsters: int, max_turns: int) -> dict:
-    keeper, _ = CONDITIONS[condition]
+    keeper, smoke, _ = CONDITIONS[condition]
     gmap = GameMap.from_file(map_path)
     state = build_state(gmap, seed=seed, n_monsters=monsters,
-                        max_turns=max_turns)
+                        max_turns=max_turns, smoke=smoke)
     row = run_headless(state, use_llm=(mode == "llm"), enemy_commander=keeper)
     row.update(condition=condition, mode=mode, map=Path(map_path).stem,
                seed=seed)
@@ -111,6 +125,12 @@ def summarize(rows: list[dict], condition: str) -> dict:
     first = [r["first_death_turn"] for r in sub
              if isinstance(r["first_death_turn"], int)]
     acts = sum(r["llm_actions"] + r["fallback_actions"] for r in sub)
+    scout_deaths = sum(1 for r in sub
+                       if "Scout" in str(r["deaths_by_role"]).split("|"))
+
+    def avg(key: str) -> float:
+        return statistics.mean(int(r.get(key) or 0) for r in sub)
+
     return {
         "condition": condition,
         "n": n,
@@ -132,6 +152,12 @@ def summarize(rows: list[dict], condition: str) -> dict:
         "invalid_rate": (sum(r["invalid_actions"] for r in sub) / acts
                          if acts else 0.0),
         "llm_calls": sum(r["llm_calls"] for r in sub),
+        "scout_deaths": scout_deaths,
+        "smokes_used": avg("smokes_used"),
+        "smokes_on_ally": avg("smokes_on_ally"),
+        "ignites": avg("ignites"),
+        "ignite_damage": avg("ignite_damage"),
+        "ignite_kills": avg("ignite_kills"),
     }
 
 
@@ -140,49 +166,64 @@ def print_report(stats: list[dict]) -> None:
     print("BENCHMARK")
     print("=" * 78)
 
-    head = (f"{'condition':<12}{'n':>5}{'win rate':>18}{'turns to win':>15}"
+    head = (f"{'condition':<20}{'n':>5}{'win rate':>18}{'turns to win':>15}"
             f"{'heroes lost':>13}{'chests':>9}")
     print(head)
-    print("-" * 78)
+    print("-" * 80)
     for s in stats:
         lo, hi = s["ci"]
-        print(f"{s['condition']:<12}{s['n']:>5}"
+        print(f"{s['condition']:<20}{s['n']:>5}"
               f"{s['win_rate']:>9.1%} [{lo:.0%}-{hi:.0%}]"
               f"{s['turns_to_win']:>14.1f}"
               f"{s['heroes_lost']:>13.2f}"
               f"{s['chest_rate']:>9.0%}")
 
     print("\nHow the squad lost, and who paid for it")
-    print("-" * 78)
+    print("-" * 80)
+    pad = " " * 20
     for s in stats:
         roles = s["deaths_by_role"]
         mix = ", ".join(f"{r} {c}" for r, c in roles.most_common()) or "nobody"
-        print(f"{s['condition']:<12} wiped {s['wiped']:>5.0%}   "
+        print(f"{s['condition']:<20} wiped {s['wiped']:>5.0%}   "
               f"timeout {s['timeout']:>5.0%}   "
               f"first death turn {s['first_death']:>5.1f}")
-        print(f"{'':<12} deaths: {mix}")
-        print(f"{'':<12} monsters killed {s['monsters_killed']:.2f}/game   "
+        print(f"{pad} deaths: {mix}")
+        print(f"{pad} monsters killed {s['monsters_killed']:.2f}/game   "
               f"invalid actions {s['invalid_rate']:.1%}   "
               f"LLM calls {s['llm_calls']}")
 
-    if len(stats) == 2:
-        a, b = stats
+    print("\nSmoke and ignite (per game)")
+    print("-" * 80)
+    for s in stats:
+        print(f"{s['condition']:<20} Scout death rate "
+              f"{s['scout_deaths'] / s['n']:>5.0%}   "
+              f"smokes {s['smokes_used']:.2f} "
+              f"(on an ally {s['smokes_on_ally']:.2f})   "
+              f"ignites {s['ignites']:.2f}   "
+              f"burn damage {s['ignite_damage']:.1f}   "
+              f"burn kills {s['ignite_kills']:.2f}")
+
+    by_name = {s["condition"]: s for s in stats}
+    pairs = [(by_name[a], by_name[b], label) for a, b, label in COMPARISONS
+             if a in by_name and b in by_name]
+    if pairs:
+        print("\nAblations")
+        print("-" * 80)
+    for a, b, label in pairs:
         delta = (a["win_rate"] - b["win_rate"]) * 100
         z, pval = two_proportion_test(a["wins"], a["n"], b["wins"], b["n"])
-        print("\nAblation")
-        print("-" * 78)
-        print(f"{a['condition']} minus {b['condition']}: "
-              f"{delta:+.1f} percentage points of squad win rate, "
-              f"{a['turns_to_win'] - b['turns_to_win']:+.1f} turns to win.")
-        print(f"Two-proportion z-test: z = {z:.2f}, p = {pval:.4f} "
-              f"({'significant' if pval < 0.05 else 'not significant'} "
-              f"at alpha = 0.05).")
-        if pval >= 0.05:
-            print("Not significant yet. Either the commander genuinely does "
-                  "little, or n is too small: raise --runs and rerun.")
-        else:
-            print("The enemy commander changes the outcome. Note the error "
-                  "bars in the plot may still overlap; that is not the test.")
+        zs, ps = two_proportion_test(a["scout_deaths"], a["n"],
+                                     b["scout_deaths"], b["n"])
+        print(f"{label}: {a['condition']} minus {b['condition']}")
+        print(f"  win rate {delta:+.1f} points   z = {z:.2f}, p = {pval:.4f} "
+              f"({'significant' if pval < 0.05 else 'not significant'})")
+        print(f"  Scout death rate "
+              f"{(a['scout_deaths'] / a['n'] - b['scout_deaths'] / b['n']) * 100:+.1f}"
+              f" points   z = {zs:.2f}, p = {ps:.4f} "
+              f"({'significant' if ps < 0.05 else 'not significant'})")
+    if pairs:
+        print("Overlapping error bars in the plot are not the test; "
+              "the z-test is.")
 
 
 def write_plot(stats: list[dict], path: str) -> bool:
@@ -194,7 +235,7 @@ def write_plot(stats: list[dict], path: str) -> bool:
         print(f"\nmatplotlib not installed, skipping {path}")
         return False
 
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(5 + 3 * len(stats), 4))
     names = [s["condition"] for s in stats]
 
     rates = [s["win_rate"] * 100 for s in stats]
@@ -217,17 +258,21 @@ def write_plot(stats: list[dict], path: str) -> bool:
     axes[1].set_ylim(0, 100)
     axes[1].legend(fontsize=8)
 
-    width = 0.35
+    width = 0.8 / len(stats)
     roles = ["Tank", "DPS", "Healer", "Scout"]
     for i, s in enumerate(stats):
         vals = [s["deaths_by_role"].get(r, 0) / s["n"] for r in roles]
         axes[2].bar([x + i * width for x in range(len(roles))], vals,
                     width, label=s["condition"])
-    axes[2].set_xticks([x + width / 2 for x in range(len(roles))])
+    axes[2].set_xticks([x + width * (len(stats) - 1) / 2
+                        for x in range(len(roles))])
     axes[2].set_xticklabels(roles)
     axes[2].set_title("Death rate per role")
     axes[2].legend(fontsize=8)
 
+    if len(stats) > 2:
+        for ax in axes[:2]:
+            ax.tick_params(axis="x", labelrotation=20, labelsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     print(f"\nPlot written to {path}")
@@ -238,7 +283,9 @@ def load_csv(paths: list[str]) -> list[dict]:
     """Read benchmark CSVs back in, so chunked runs can be merged."""
     ints = {"turns", "heroes_lost", "chests", "total_chests", "survivors",
             "hp_left", "monsters_killed", "orders_issued", "llm_calls",
-            "llm_actions", "fallback_actions", "invalid_actions", "seed"}
+            "llm_actions", "fallback_actions", "invalid_actions", "seed",
+            "smokes_used", "smokes_on_ally", "ignites", "ignite_damage",
+            "ignite_kills"}
     rows: list[dict] = []
     for path in paths:
         with open(path, newline="", encoding="utf-8") as fh:
@@ -261,7 +308,8 @@ def main() -> None:
     p.add_argument("--maps", nargs="+", default=DEFAULT_MAPS)
     p.add_argument("--conditions", nargs="+",
                    default=["keeper_on", "keeper_off"],
-                   choices=list(CONDITIONS))
+                   choices=list(CONDITIONS) + ["all"],
+                   help="'all' runs all four: Keeper on/off x smoke on/off")
     p.add_argument("--mode", choices=["scripted", "llm"], default="scripted")
     p.add_argument("--runs", type=int, default=40,
                    help="seeds per map per condition (3 maps x 40 = 120)")
@@ -275,11 +323,14 @@ def main() -> None:
                    help="skip running; build the report from existing CSVs. "
                         "Pass several to merge chunked runs.")
     args = p.parse_args()
+    if "all" in args.conditions:
+        args.conditions = list(CONDITIONS)
 
     if args.from_csv:
         rows = load_csv(args.from_csv)
+        order = list(CONDITIONS)
         conditions = sorted({r["condition"] for r in rows},
-                            key=lambda c: c != "keeper_on")
+                            key=lambda c: order.index(c) if c in order else 99)
         stats = [s for s in (summarize(rows, c) for c in conditions) if s]
         print(f"Loaded {len(rows)} games from "
               f"{', '.join(args.from_csv)}")

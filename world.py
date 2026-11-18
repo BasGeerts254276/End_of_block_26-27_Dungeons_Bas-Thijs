@@ -103,15 +103,21 @@ def bresenham(a: Pos, b: Pos) -> list[Pos]:
             y0 += sy
 
 
-def has_los(gmap: GameMap, a: Pos, b: Pos) -> bool:
-    """Sight from a to b: no wall strictly between the two points."""
+def has_los(gmap: GameMap, a: Pos, b: Pos,
+            extra_blockers: frozenset[Pos] | set[Pos] = frozenset()) -> bool:
+    """Sight from a to b: no wall (or smoke) strictly between the two points.
+
+    `extra_blockers` are tiles that block sight without being walls, such as
+    the Scout's smoke cloud.
+    """
     for p in bresenham(a, b)[1:-1]:
-        if gmap.blocks_sight(p):
+        if gmap.blocks_sight(p) or p in extra_blockers:
             return False
     return True
 
 
-def fov(gmap: GameMap, origin: Pos, radius: int) -> set[Pos]:
+def fov(gmap: GameMap, origin: Pos, radius: int,
+        extra_blockers: frozenset[Pos] | set[Pos] = frozenset()) -> set[Pos]:
     """Field of view. Simple raycast: good enough for rooms and corridors."""
     seen = {origin}
     ox, oy = origin
@@ -122,7 +128,7 @@ def fov(gmap: GameMap, origin: Pos, radius: int) -> set[Pos]:
                 continue
             if chebyshev(origin, p) > radius:
                 continue
-            if has_los(gmap, origin, p):
+            if has_los(gmap, origin, p, extra_blockers):
                 seen.add(p)
     return seen
 
